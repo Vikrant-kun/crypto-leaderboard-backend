@@ -1,0 +1,11 @@
+# Compiled Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+__debug_bin
+bin/
+
+# Docker local data store volume (Crucial: do not commit local DB data)
+postgres_data/
