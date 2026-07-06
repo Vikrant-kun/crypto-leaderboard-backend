@@ -226,6 +226,7 @@ func BroadcastLeaderboardUpdate(ctx context.Context, rdb *redis.Client) {
 		Data: dataset,
 	}
 
+    
     jsonBytes, err := json.Marshal(wrapper)
     if err != nil {
         return
