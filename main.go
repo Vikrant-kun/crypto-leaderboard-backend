@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -29,10 +31,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize Postgres driver connection: %v", err)
 	}
-	defer db.Close()
 
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	defer rdb.Close()
 
 	// 2. Initialize Schema
 	if err := createTableIfNotExists(db); err != nil {
@@ -40,11 +40,10 @@ func main() {
 	}
 	fmt.Println("Databases connected and schema ready.")
 
-	// 3. Register our real-time WebSocket route
+	// 3. Register WebSocket route
 	http.HandleFunc("/ws/leaderboard", HandleLeaderboardWS)
 
-	// 4. Background Concurrency Simulator:
-	// Simulates live crypto rank variations every 3 seconds and triggers a broadcast update
+	// 4. Background Concurrency Simulator
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
@@ -58,35 +57,58 @@ func main() {
 			{"user_03", "Charlie_SOL"},
 		}
 
-		// Initial mock state populator
 		_ = updatePlayerScore(ctx, db, rdb, "user_01", "Alice_BTC", 100)
 		_ = updatePlayerScore(ctx, db, rdb, "user_02", "Bob_ETH", 120)
 		_ = updatePlayerScore(ctx, db, rdb, "user_03", "Charlie_SOL", 110)
 
 		fmt.Println("Live stream simulation engine started...")
 		
-		// Infinite loop picking a random player to receive an entry update every tick
 		iteration := 0
 		for range ticker.C {
-			// Alternating score point adjustments to force ranking shifts
 			targetPlayer := players[iteration%3]
-			scoreGain := int64(40) // Static step additions
+			scoreGain := int64(40)
 			
 			err := updatePlayerScore(ctx, db, rdb, targetPlayer.id, targetPlayer.name, scoreGain)
 			if err == nil {
 				log.Printf("[Simulator Update] Added %d points to %s", scoreGain, targetPlayer.name)
-				// Core action trigger: Broadcast latest data down the open connections!
 				BroadcastLeaderboardUpdate(ctx, rdb)
 			}
 			iteration++
 		}
 	}()
 
-	// 5. Start the API Server process
-	log.Println("Backend Server running live on http://localhost:8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatalf("Server shutdown unexpectedly: %v", err)
+	// 5. GRACEFUL SHUTDOWN ARCHITECTURE
+	// Create a channel that listens for interrupt signals from the operating system (like Ctrl+C)
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, os.Interrupt)
+
+	// Spin up the HTTP API server in its own independent background goroutine
+	// so it doesn't block the main execution thread from listening for shutdown signals below
+	go func() {
+		log.Println("Backend Server running live on http://localhost:8080")
+		if err := http.ListenAndServe(":8080", nil); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server shutdown unexpectedly: %v", err)
+		}
+	}()
+
+	// This line blocks execution completely until an OS interrupt signal is sent into the channel
+	<-shutdownChan
+	fmt.Println("\nShutdown signal detected! Starting graceful drainage sequence...")
+
+	// Close all active user WebSockets cleanly before closing the core servers
+	fmt.Printf("Closing %d active client connections...\n", len(activeClients))
+	for clientConn := range activeClients {
+		// Send a standardized close frame metadata signal back to the browser
+		_ = clientConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Server shutting down cleanly"))
+		clientConn.Close()
 	}
+
+	// Close database network pools safely
+	fmt.Println("Closing database connection pools...")
+	db.Close()
+	rdb.Close()
+
+	fmt.Println("Graceful shutdown sequence finished. Application exited safely.")
 }
 
 func createTableIfNotExists(db *sql.DB) error {
