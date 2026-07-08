@@ -1,4 +1,6 @@
 # Compiled Go binaries
+.env
+.env.local
 *.exe
 *.exe~
 *.dll
