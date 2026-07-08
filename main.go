@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
@@ -62,15 +63,35 @@ var (
 )
 
 func main() {
+		err := godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found, using system environment variables")
+	}
+	
 	ctx := context.Background()
 
-	pgConnStr := "host=localhost port=5432 user=postgres password=local_password dbname=postgres sslmode=disable"
+	pgConnStr := os.Getenv("DATABASE_URL")
+
+    if pgConnStr == "" {
+        log.Fatal("DATABASE_URL environment variable not set")
+    }
 	db, err := sql.Open("postgres", pgConnStr)
 	if err != nil {
 		log.Fatalf("Failed to initialize Postgres driver connection: %v", err)
 	}
 
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	redisURL := os.Getenv("REDIS_URL")
+
+    if redisURL == "" {
+        log.Fatal("REDIS_URL environment variable not set")
+    }
+
+    opts, err := redis.ParseURL(redisURL)
+    if err != nil {
+        log.Fatalf("Failed to parse Redis URL: %v", err)
+    }
+
+    rdb := redis.NewClient(opts)
 
 	if err := createTableIfNotExists(db); err != nil {
 		log.Fatalf("Failed to create postgres tables: %v", err)
@@ -154,10 +175,18 @@ func main() {
 	signal.Notify(shutdownChan, os.Interrupt)
 
 	go func() {
-		log.Println("Backend Server running live on http://localhost:8080")
-		if err := http.ListenAndServe(":8080", nil); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server shutdown unexpectedly: %v", err)
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
 		}
+
+		go func() {
+			log.Printf("Backend Server running on port %s", port)
+
+			if err := http.ListenAndServe(":"+port, nil); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Server shutdown unexpectedly: %v", err)
+			}
+		}()
 	}()
 
 	<-shutdownChan
@@ -170,11 +199,10 @@ func main() {
 	}
 	clientsMu.Unlock()
 
-	db.Close()
-	rdb.Close()
+	_ = db.Close()
+	_ = rdb.Close()
 	fmt.Println("Graceful shutdown sequence finished.")
 }
-
 func HandleLeaderboardWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
